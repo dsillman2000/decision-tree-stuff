@@ -1,0 +1,19 @@
+[tool.poetry]
+name = "decision-tree-stuff"
+version = "1.0.0"
+description = "Polars binary decision tree classifier"
+authors = ["David Sillman <dsillman2000@gmail.com>"]
+readme = "README.md"
+packages = [{include = "decision_tree_stuff"}]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+polars = "^0.18.3"
+
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.3.2"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

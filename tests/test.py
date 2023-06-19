@@ -2,8 +2,8 @@ import math
 
 import polars as pl
 import pytest
-from decision_tree_stuff import DecisionNode, DecisionTree, LeafNode
-from decision_tree_stuff.dtree import DecisionTreeParams
+from decision_tree_stuff import DecisionTree, DecisionTreeParams
+from decision_tree_stuff.dtree import DecisionNode, LeafNode
 from decision_tree_stuff.splitting import (
     EntropySplitMetric,
     SplitParams,

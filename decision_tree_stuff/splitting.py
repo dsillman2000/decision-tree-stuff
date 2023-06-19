@@ -45,34 +45,17 @@ class MidpointSplitter(SplittingMethod):
     def threshold_expr(cls, expr: pl.Expr) -> pl.Expr:
         return (expr.min() + expr.max()) / 2.0
 
-    @classmethod
-    def compute_threshold(cls, samples: pl.DataFrame, splitting_key: str) -> float:
-        f_min: float = samples[splitting_key].min()  # type: ignore
-        f_max: float = samples[splitting_key].max()  # type: ignore
-        f_mid = (f_min + f_max) / 2.0
-        return f_mid
-
 
 class MedianSplitter(SplittingMethod):
     @classmethod
     def threshold_expr(cls, expr: pl.Expr) -> pl.Expr:
         return expr.median()
 
-    @classmethod
-    def compute_threshold(cls, samples: pl.DataFrame, splitting_key: str) -> float:
-        median: float = samples[splitting_key].median()  # type: ignore
-        return median
-
 
 class MeanSplitter(SplittingMethod):
     @classmethod
     def threshold_expr(cls, expr: pl.Expr) -> pl.Expr:
         return expr.mean()
-
-    @classmethod
-    def compute_threshold(cls, samples: pl.DataFrame, splitting_key: str) -> float:
-        mean: float = samples[splitting_key].mean()  # type: ignore
-        return mean
 
 
 class SplitMetric(abc.ABC):
