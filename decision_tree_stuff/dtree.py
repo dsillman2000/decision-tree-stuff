@@ -1,5 +1,9 @@
 import abc
-from typing import NamedTuple, Optional, Type
+import io
+import json
+import operator
+import os
+from typing import Any, Dict, NamedTuple, Optional, Self, Type
 
 import polars as pl
 from decision_tree_stuff.splitting import (
@@ -21,8 +25,13 @@ class TreeNode(abc.ABC):
     def classify(self, samples: pl.DataFrame | pl.LazyFrame) -> pl.Series:
         ...
 
+    @classmethod
     @abc.abstractmethod
-    def to_debug_string(self) -> str:
+    def from_dict(cls, dict_repr: dict) -> Self:
+        ...
+
+    @abc.abstractmethod
+    def dict(self) -> dict[str, Any]:
         ...
 
 
@@ -30,13 +39,18 @@ class LeafNode(TreeNode):
     def __init__(self, label: int):
         self._label: int = label
 
-    def to_debug_string(self) -> str:
-        return '"class" = ' + str(self.label)
-
     @classmethod
     def from_majority_class(cls, classes: pl.Series) -> "LeafNode":
         assert classes.name == "class", "Expected `classes` Series name to be 'class', but got %s" % classes.name
         return cls(get_majority(classes))
+    
+    @classmethod
+    def from_dict(cls, dict_repr: dict) -> "LeafNode":
+        assert "class" in dict_repr.keys()
+        return LeafNode(dict_repr["class"])
+    
+    def dict(self) -> dict[str, Any]:
+        return {'class': self.label}
 
     @property
     def label(self) -> int:
@@ -50,11 +64,11 @@ class LeafNode(TreeNode):
 
 
 class DecisionNode(TreeNode):
-    def __init__(self, attribute: str, threshold: float, left_label: int, right_label: int):
+    def __init__(self, attribute: str, threshold: float, left_label: Optional[int] = None, right_label: Optional[int] = None):
         self._attribute: str = attribute
         self._threshold: float = threshold
-        self._left: TreeNode = LeafNode(left_label)
-        self._right: TreeNode = LeafNode(right_label)
+        self._left: Optional[TreeNode] = LeafNode(left_label) if left_label is not None else None
+        self._right: Optional[TreeNode] = LeafNode(right_label) if right_label is not None else None
 
     @property
     def attribute(self) -> str:
@@ -65,7 +79,7 @@ class DecisionNode(TreeNode):
         return self._threshold
 
     @property
-    def left(self) -> TreeNode:
+    def left(self) -> Optional[TreeNode]:
         return self._left
 
     @left.setter
@@ -73,7 +87,7 @@ class DecisionNode(TreeNode):
         self._left = left_node
 
     @property
-    def right(self) -> TreeNode:
+    def right(self) -> Optional[TreeNode]:
         return self._right
 
     @right.setter
@@ -89,13 +103,24 @@ class DecisionNode(TreeNode):
 
         left_samples, right_samples = self.to_params().split(idxed_samples)
 
-        left_preds: pl.DataFrame | pl.LazyFrame = left_samples.with_columns(
-            self.left.classify(left_samples.drop("row_nr"))
-        )
+        if self.left is not None and self.right is not None:
+            left_preds: pl.DataFrame | pl.LazyFrame = left_samples.with_columns(
+                self.left.classify(left_samples.drop("row_nr"))
+            )
 
-        right_preds: pl.DataFrame | pl.LazyFrame = right_samples.with_columns(
-            self.right.classify(right_samples.drop("row_nr"))
-        )
+            right_preds: pl.DataFrame | pl.LazyFrame = right_samples.with_columns(
+                self.right.classify(right_samples.drop("row_nr"))
+            )
+        else:
+            eager_classes_left, eager_classes_right = \
+                left_samples.select("class").lazy().collect().to_series(), \
+                right_samples.select("class").lazy().collect().to_series()
+            left_preds: pl.DataFrame | pl.LazyFrame = left_samples.with_columns(
+                pl.lit(eager_classes_left.mode()[0]).alias("prediction")
+            )
+            right_preds: pl.DataFrame | pl.LazyFrame = right_samples.with_columns(
+                pl.lit(eager_classes_right.mode()[0]).alias("prediction")
+            )
 
         if eager:
             assert isinstance(left_preds, pl.DataFrame) and isinstance(right_preds, pl.DataFrame)
@@ -103,17 +128,40 @@ class DecisionNode(TreeNode):
 
         assert isinstance(left_preds, pl.LazyFrame) and isinstance(right_preds, pl.LazyFrame)
         return pl.concat([left_preds, right_preds]).sort("row_nr").select("prediction").collect().to_series()
+    
+    def condition_str(self, lt: bool=True) -> str:
+        _cmp_str: str = "<=" if lt else ">"
+        return f"{self.attribute} {_cmp_str} {self.threshold}" 
 
-    def to_debug_string(self) -> str:
-        return (
-            "{ "
-            + f'"{self.attribute}" <= {self.threshold}'
-            + " } ?"
-            + "\n  t: "
-            + self.left.to_debug_string().replace("\n", "\n| ")
-            + "\n  f: "
-            + self.right.to_debug_string().replace("\n", "\n| ")
-        )
+    @classmethod
+    def from_condition_str(cls, condition_str: str, lt: bool=True) -> "DecisionNode":
+        attr, str_thresh = condition_str.split("<=" if lt else ">")
+        return cls(attr.strip(), float(str_thresh.strip()))
+    
+    @classmethod
+    def from_dict(cls, dict_repr: dict) -> "DecisionNode":
+        lt_key: Optional[str] = next(filter(lambda k: "<=" in k, dict_repr.keys()), None)
+        gt_key: Optional[str] = next(filter(lambda k: ">" in k, dict_repr.keys()), None)
+        assert lt_key is not None
+        slf = cls.from_condition_str(lt_key)
+
+        if any(['<=' in k for k in dict_repr[lt_key].keys()]):
+            slf.left = DecisionNode.from_dict(dict_repr[lt_key])
+        else:
+            slf.left = LeafNode.from_dict(dict_repr[lt_key])
+
+        if any(['<=' in k for k in dict_repr[gt_key].keys()]):
+            slf.right = DecisionNode.from_dict(dict_repr[gt_key])
+        else:
+            slf.right = LeafNode.from_dict(dict_repr[gt_key])
+
+        return slf
+    
+    def dict(self) -> dict[str, Any]:
+        return {
+            self.condition_str(lt=True): self.left.dict() if self.left is not None else None,
+            self.condition_str(lt=False): self.right.dict() if self.right is not None else None
+        }
 
 
 class DecisionTreeParams(NamedTuple):
@@ -141,27 +189,6 @@ class DecisionTree:
     @property
     def learned_tree(self) -> Optional[TreeNode]:
         return self._root
-
-    def to_debug_string(self) -> str:
-        if self._root is None:
-            return "None"
-
-        if isinstance(self._root, DecisionNode):
-            assert self._left_subtree is not None and self._right_subtree is not None
-            return "(E={:.4f}) ".format(self._entropy) + (
-                "{ "
-                + f'"{self._root.attribute}" <= {self._root.threshold}'
-                + " } ?"
-                + "\n  t: "
-                + self._left_subtree.to_debug_string().replace("\n ", "\n  |")
-                + "\n  f: "
-                + self._right_subtree.to_debug_string().replace("\n ", "\n   ")
-            )
-
-        if isinstance(self._root, LeafNode):
-            return "(E={:.4f}) ".format(self._entropy) + '"class" = ' + str(self._root.label)
-
-        return ""
 
     def fit(self, dataset: pl.DataFrame | pl.LazyFrame, prune: bool = False):
         eager = isinstance(dataset, pl.DataFrame)
@@ -230,3 +257,30 @@ class DecisionTree:
 
     def transform(self, dataset: pl.DataFrame | pl.LazyFrame) -> pl.DataFrame | pl.LazyFrame:
         return dataset.with_columns(self.classify(dataset))
+    
+    @classmethod
+    def from_dict(cls, dict_repr: dict[str, Any]) -> "DecisionTree":
+        params = DecisionTreeParams(**dict_repr["params"])
+        depth = dict_repr["depth"]
+        if any(["<=" in k for k in dict_repr["nodes"].keys()]):
+            root = DecisionNode.from_dict(dict_repr["nodes"])
+        else:
+            root = LeafNode.from_dict(dict_repr["nodes"])
+        return cls(params, root, depth)
+    
+    def dict(self) -> dict[str, Any]:
+        params = dict(zip(self._params._fields, self._params))
+        nodes = self._root.dict() if self._root is not None else None
+        return {'params': params, 'depth': self._depth, 'nodes': nodes}
+    
+    def save_json(self, filepath: str):
+        with open(filepath, 'w') as f:
+            f.write(self.json(indent=4))
+
+    @classmethod
+    def load_json(cls, filepath: str) -> "DecisionTree":
+        with open(filepath, 'r') as f:
+            return cls.from_dict(json.loads(f.read()))
+        
+    def json(self, indent: Optional[int] = None) -> str:
+        return json.dumps(self.dict(), indent=indent)
