@@ -99,6 +99,7 @@ SPLIT_METHOD_LOOKUP: dict[str, Type[SplittingMethod]] = {
 
 def compute_all_splits(
     samples: pl.DataFrame | pl.LazyFrame,
+    class_column: str,
     metric: Type[SplitMetric] | str,
     method: Type[SplittingMethod] | str,
 ) -> pl.DataFrame | pl.LazyFrame:
@@ -108,12 +109,12 @@ def compute_all_splits(
     if isinstance(method, str):
         method = SPLIT_METHOD_LOOKUP[method]
 
-    splittable_attrs = list(set(samples.columns) - set(["class"]))
+    splittable_attrs = list(set(samples.columns) - set([class_column]))
     assert len(splittable_attrs) > 0, "No splittable attrs"
 
     # fmt: off
     best_split_frame: pl.LazyFrame | pl.DataFrame = samples \
-        .melt(id_vars='class', value_vars=splittable_attrs) \
+        .melt(id_vars=class_column, value_vars=splittable_attrs) \
         .with_columns(
             method.threshold_expr(pl.col('value'))
                 .over('variable') \
@@ -124,12 +125,12 @@ def compute_all_splits(
         ) \
         .groupby('variable', 'threshold') \
         .agg(
-            pl.col('class') \
+            pl.col(class_column) \
                 .filter(pl.col('left')) \
                 .mean() \
                 .fill_null(0.) \
                 .alias('left_p1'),
-            pl.col('class') \
+            pl.col(class_column) \
                 .filter(pl.col('left').is_not()) \
                 .mean() \
                 .fill_null(0.) \
@@ -150,12 +151,13 @@ def compute_all_splits(
 
 def find_best_split(
     samples: pl.DataFrame | pl.LazyFrame,
+    class_column: str,
     metric: Type[SplitMetric] | str,
     method: Type[SplittingMethod] | str,
 ) -> SplitParams:
     eager = isinstance(samples, pl.DataFrame)
 
-    all_splits = compute_all_splits(samples, metric, method)
+    all_splits = compute_all_splits(samples, class_column, metric, method)
 
     if not eager:
         assert isinstance(all_splits, pl.LazyFrame)
