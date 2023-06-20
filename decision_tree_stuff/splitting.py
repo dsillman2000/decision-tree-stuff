@@ -97,11 +97,10 @@ SPLIT_METHOD_LOOKUP: dict[str, Type[SplittingMethod]] = {
 }
 
 
-def compute_n_best_splits(
+def compute_all_splits(
     samples: pl.DataFrame | pl.LazyFrame,
     metric: Type[SplitMetric] | str,
     method: Type[SplittingMethod] | str,
-    n: int,
 ) -> pl.DataFrame | pl.LazyFrame:
     if isinstance(metric, str):
         metric = SPLIT_METRIC_LOOKUP[metric]
@@ -143,30 +142,26 @@ def compute_n_best_splits(
             ).fill_nan(0.) \
             .alias('metric')
         ) \
-        .sort('metric', descending=not metric.seek_minimum) \
-        .limit(n)
+        .sort('metric', descending=not metric.seek_minimum) 
     # fmt: on
 
     return best_split_frame
 
 
-def next_best_split(
+def find_best_split(
     samples: pl.DataFrame | pl.LazyFrame,
     metric: Type[SplitMetric] | str,
     method: Type[SplittingMethod] | str,
-    n: int = 1,
-) -> Generator[SplitParams, Any, Any]:
+) -> SplitParams:
     eager = isinstance(samples, pl.DataFrame)
 
-    all_splits = compute_n_best_splits(samples, metric, method, n)
+    all_splits = compute_all_splits(samples, metric, method)
 
     if not eager:
         assert isinstance(all_splits, pl.LazyFrame)
         all_splits = all_splits.collect()
 
     assert isinstance(all_splits, pl.DataFrame)
-    best_split_dicts: list[dict[str, Any]] = all_splits.to_dicts()
+    split_dicts: list[dict[str, Any]] = all_splits.to_dicts()
 
-    for best_split in best_split_dicts:
-        best_split_params = SplitParams(best_split["variable"], best_split["threshold"])
-        yield best_split_params
+    return SplitParams(split_dicts[0]["variable"], split_dicts[0]["threshold"])

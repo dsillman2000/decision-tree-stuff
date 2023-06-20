@@ -7,7 +7,7 @@ from decision_tree_stuff.dtree import DecisionNode, LeafNode
 from decision_tree_stuff.splitting import (
     EntropySplitMetric,
     SplitParams,
-    next_best_split,
+    find_best_split,
 )
 
 
@@ -86,8 +86,8 @@ def heterodf() -> pl.DataFrame:
 
 def test_find_best_split(heterodf: pl.DataFrame):
 
-    assert next(next_best_split(heterodf, 'entropy', 'midpoint')) == SplitParams('feature_1', 1.)
-    assert next(next_best_split(heterodf.lazy(), 'entropy', 'midpoint')) == SplitParams('feature_1', 1.)
+    assert find_best_split(heterodf, 'entropy', 'midpoint') == SplitParams('feature_1', 1.)
+    assert find_best_split(heterodf.lazy(), 'entropy', 'midpoint') == SplitParams('feature_1', 1.)
 
 def test_decision_tree(heterodf: pl.DataFrame):
 
