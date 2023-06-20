@@ -1,3 +1,4 @@
+import io
 import math
 
 import polars as pl
@@ -104,6 +105,18 @@ def test_decision_tree(heterodf: pl.DataFrame):
   t: (E=0.0000) "class" = 0
   f: (E=0.0000) "class" = 1""".lstrip()
     
+    assert dt.dict() == {
+        'params': {
+            'max_depth': -1, 
+            'min_split_entropy': 0.0, 
+            'min_split_samples': 0,
+            'split_metric': 'entropy', 
+            'splitting_method': 'midpoint',
+        },
+        'depth': 0,
+        'nodes': {'feature_1 <= 1.0': {'class': 0}, 'feature_1 > 1.0': {'class': 1}},
+    }
+    
     dt = DecisionTree(DecisionTreeParams('midpoint', 'entropy'))
     dt.fit(heterodf.lazy())
     
@@ -116,3 +129,15 @@ def test_decision_tree(heterodf: pl.DataFrame):
 (E=0.8631) { "feature_1" <= 1.0 } ?
   t: (E=0.0000) "class" = 0
   f: (E=0.0000) "class" = 1""".lstrip()
+    
+    assert dt.dict() == {
+        'params': {
+            'max_depth': -1, 
+            'min_split_entropy': 0.0, 
+            'min_split_samples': 0,
+            'split_metric': 'entropy', 
+            'splitting_method': 'midpoint',
+        },
+        'depth': 0,
+        'nodes': {'feature_1 <= 1.0': {'class': 0}, 'feature_1 > 1.0': {'class': 1}},
+    }
