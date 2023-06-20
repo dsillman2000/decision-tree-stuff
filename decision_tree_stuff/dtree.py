@@ -8,7 +8,7 @@ from decision_tree_stuff.splitting import (
     SplitMetric,
     SplitParams,
     SplittingMethod,
-    next_best_split,
+    find_best_split,
 )
 
 
@@ -163,8 +163,7 @@ class DecisionTree:
 
         return ""
 
-    # @log_calls
-    def fit(self, dataset: pl.DataFrame | pl.LazyFrame, pruning_rounds: int = 0):
+    def fit(self, dataset: pl.DataFrame | pl.LazyFrame, prune: bool = False):
         eager = isinstance(dataset, pl.DataFrame)
         eager_classes = dataset.select("class") if eager else dataset.select("class").collect()
 
@@ -186,42 +185,35 @@ class DecisionTree:
             and root_samples >= self._params.min_split_samples
             and self._depth != self._params.max_depth
         ):
-            for best_split in next_best_split(
-                dataset,
-                self._params.split_metric,
-                self._params.splitting_method,
-                n=max(pruning_rounds, 1),
-            ):
-                left, right = best_split.split(dataset)
-                if not eager:
-                    assert isinstance(left, pl.LazyFrame) and isinstance(right, pl.LazyFrame)
-                    left, right = left.collect(), right.collect()
-                assert isinstance(left, pl.DataFrame) and isinstance(right, pl.DataFrame)
+            best_split = find_best_split(dataset, self._params.split_metric, self._params.splitting_method)
+            left, right = best_split.split(dataset)
+            if not eager:
+                assert isinstance(left, pl.LazyFrame) and isinstance(right, pl.LazyFrame)
+                left, right = left.collect(), right.collect()
+            assert isinstance(left, pl.DataFrame) and isinstance(right, pl.DataFrame)
 
-                if min(left.height, right.height) == 0:
-                    return
+            if min(left.height, right.height) == 0:
+                return
 
-                left_label = get_majority(left["class"])
-                right_label = get_majority(right["class"])
+            left_label = get_majority(left["class"])
+            right_label = get_majority(right["class"])
 
-                self._root = DecisionNode(best_split.attribute, best_split.threshold, left_label, right_label)
-                self._left_subtree = DecisionTree(self._params, self._root.left, self._depth + 1)
-                self._right_subtree = DecisionTree(self._params, self._root.right, self._depth + 1)
+            self._root = DecisionNode(best_split.attribute, best_split.threshold, left_label, right_label)
+            self._left_subtree = DecisionTree(self._params, self._root.left, self._depth + 1)
+            self._right_subtree = DecisionTree(self._params, self._root.right, self._depth + 1)
 
-                self._left_subtree.fit(left, pruning_rounds=pruning_rounds)
-                self._right_subtree.fit(right, pruning_rounds=pruning_rounds)
+            self._left_subtree.fit(left, prune=prune)
+            self._right_subtree.fit(right, prune=prune)
 
-                if pruning_rounds > 0 and len(set(self.leaf_classes())) == 1:
-                    del self._left_subtree
-                    del self._right_subtree
-                    self._root = LeafNode.from_majority_class(eager_classes.to_series())
-                    continue
+            if prune and len(set(self.leaf_classes())) == 1:
+                del self._left_subtree
+                del self._right_subtree
+                self._root = LeafNode.from_majority_class(eager_classes.to_series())
+                return
 
-                break
-
-            if isinstance(self._root, DecisionNode):
-                self._root.left = self._left_subtree.learned_tree # type: ignore
-                self._root.right = self._right_subtree.learned_tree  # type: ignore
+            assert isinstance(self._root, DecisionNode)
+            self._root.left = self._left_subtree.learned_tree # type: ignore
+            self._root.right = self._right_subtree.learned_tree  # type: ignore
 
     def leaf_classes(self) -> list[int]:
         if isinstance(self._root, LeafNode):
