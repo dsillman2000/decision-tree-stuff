@@ -2,6 +2,7 @@ import abc
 import io
 import json
 import operator
+import os
 from typing import Any, Dict, NamedTuple, Optional, Self, Type
 
 import polars as pl
@@ -24,10 +25,6 @@ class TreeNode(abc.ABC):
     def classify(self, samples: pl.DataFrame | pl.LazyFrame) -> pl.Series:
         ...
 
-    @abc.abstractmethod
-    def to_debug_string(self) -> str:
-        ...
-
     @classmethod
     @abc.abstractmethod
     def from_dict(cls, dict_repr: dict) -> Self:
@@ -41,9 +38,6 @@ class TreeNode(abc.ABC):
 class LeafNode(TreeNode):
     def __init__(self, label: int):
         self._label: int = label
-
-    def to_debug_string(self) -> str:
-        return '"class" = ' + str(self.label)
 
     @classmethod
     def from_majority_class(cls, classes: pl.Series) -> "LeafNode":
@@ -134,19 +128,6 @@ class DecisionNode(TreeNode):
 
         assert isinstance(left_preds, pl.LazyFrame) and isinstance(right_preds, pl.LazyFrame)
         return pl.concat([left_preds, right_preds]).sort("row_nr").select("prediction").collect().to_series()
-
-    def to_debug_string(self) -> str:
-        left_debug = self.left.to_debug_string() if self.left is not None else 'None'
-        right_debug = self.right.to_debug_string() if self.right is not None else 'None'
-        return (
-            "{ "
-            + f'"{self.attribute}" <= {self.threshold}'
-            + " } ?"
-            + "\n  t: "
-            + left_debug.replace("\n", "\n| ")
-            + "\n  f: "
-            + right_debug.replace("\n", "\n| ")
-        )
     
     def condition_str(self, lt: bool=True) -> str:
         _cmp_str: str = "<=" if lt else ">"
@@ -208,27 +189,6 @@ class DecisionTree:
     @property
     def learned_tree(self) -> Optional[TreeNode]:
         return self._root
-
-    def to_debug_string(self) -> str:
-        if self._root is None:
-            return "None"
-
-        if isinstance(self._root, DecisionNode):
-            assert self._left_subtree is not None and self._right_subtree is not None
-            return "(E={:.4f}) ".format(self._entropy) + (
-                "{ "
-                + f'"{self._root.attribute}" <= {self._root.threshold}'
-                + " } ?"
-                + "\n  t: "
-                + self._left_subtree.to_debug_string().replace("\n ", "\n  |")
-                + "\n  f: "
-                + self._right_subtree.to_debug_string().replace("\n ", "\n   ")
-            )
-
-        if isinstance(self._root, LeafNode):
-            return "(E={:.4f}) ".format(self._entropy) + '"class" = ' + str(self._root.label)
-
-        return ""
 
     def fit(self, dataset: pl.DataFrame | pl.LazyFrame, prune: bool = False):
         eager = isinstance(dataset, pl.DataFrame)
@@ -313,11 +273,14 @@ class DecisionTree:
         nodes = self._root.dict() if self._root is not None else None
         return {'params': params, 'depth': self._depth, 'nodes': nodes}
     
-    def save_json(self, filepath: str | io.IOBase):
-        with open(filepath, 'w') if isinstance(filepath, str) else filepath as f:
-            f.write(json.dumps(self.dict(), indent=4))
+    def save_json(self, filepath: str):
+        with open(filepath, 'w') as f:
+            f.write(self.json(indent=4))
 
     @classmethod
-    def load_json(cls, filepath: str | io.IOBase) -> "DecisionTree":
-        with open(filepath, 'r') if isinstance(filepath, str) else filepath as f:
+    def load_json(cls, filepath: str) -> "DecisionTree":
+        with open(filepath, 'r') as f:
             return cls.from_dict(json.loads(f.read()))
+        
+    def json(self, indent: Optional[int] = None) -> str:
+        return json.dumps(self.dict(), indent=indent)

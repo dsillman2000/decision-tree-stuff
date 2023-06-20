@@ -1,5 +1,7 @@
 import io
+import json
 import math
+import tempfile
 
 import polars as pl
 import pytest
@@ -98,12 +100,6 @@ def test_decision_tree(heterodf: pl.DataFrame):
     assert isinstance(dt.learned_tree, DecisionNode) and dt.learned_tree.to_params() == SplitParams('feature_1', 1.)
     assert isinstance(dt.learned_tree.left, LeafNode) and dt.learned_tree.left.label == 0
     assert isinstance(dt.learned_tree.right, LeafNode) and dt.learned_tree.right.label == 1
-
-    dbg_str = dt.to_debug_string()
-    assert dbg_str == """
-(E=0.8631) { "feature_1" <= 1.0 } ?
-  t: (E=0.0000) "class" = 0
-  f: (E=0.0000) "class" = 1""".lstrip()
     
     assert dt.dict() == {
         'params': {
@@ -116,6 +112,7 @@ def test_decision_tree(heterodf: pl.DataFrame):
         'depth': 0,
         'nodes': {'feature_1 <= 1.0': {'class': 0}, 'feature_1 > 1.0': {'class': 1}},
     }
+    assert json.loads(dt.json(indent=4)) == dt.dict()
     
     dt = DecisionTree(DecisionTreeParams('midpoint', 'entropy'))
     dt.fit(heterodf.lazy())
@@ -123,12 +120,6 @@ def test_decision_tree(heterodf: pl.DataFrame):
     assert isinstance(dt.learned_tree, DecisionNode) and dt.learned_tree.to_params() == SplitParams('feature_1', 1.)
     assert isinstance(dt.learned_tree.left, LeafNode) and dt.learned_tree.left.label == 0
     assert isinstance(dt.learned_tree.right, LeafNode) and dt.learned_tree.right.label == 1
-
-    dbg_str = dt.to_debug_string()
-    assert dbg_str == """
-(E=0.8631) { "feature_1" <= 1.0 } ?
-  t: (E=0.0000) "class" = 0
-  f: (E=0.0000) "class" = 1""".lstrip()
     
     assert dt.dict() == {
         'params': {
@@ -141,3 +132,15 @@ def test_decision_tree(heterodf: pl.DataFrame):
         'depth': 0,
         'nodes': {'feature_1 <= 1.0': {'class': 0}, 'feature_1 > 1.0': {'class': 1}},
     }
+    assert json.loads(dt.json(indent=4)) == dt.dict()
+
+def test_save_and_load_json(heterodf: pl.DataFrame):
+
+    dt = DecisionTree(DecisionTreeParams('midpoint', 'entropy'))
+    dt.fit(heterodf)
+
+    tmpf = tempfile.mktemp()
+    dt.save_json(tmpf)
+    dt2 = DecisionTree.load_json(tmpf)
+
+    assert dt.dict() == dt2.dict()
