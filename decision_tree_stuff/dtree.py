@@ -6,6 +6,7 @@ import os
 from typing import Any, Dict, NamedTuple, Optional, Self, Type
 
 import polars as pl
+
 from decision_tree_stuff.splitting import (
     EntropySplitMetric,
     MeanSplitter,
@@ -22,7 +23,7 @@ def get_majority(classes: pl.Series) -> int:
 
 class TreeNode(abc.ABC):
     @abc.abstractmethod
-    def classify(self, samples: pl.DataFrame | pl.LazyFrame) -> pl.Series:
+    def classify(self, samples: pl.DataFrame | pl.LazyFrame, idx_col: str = 'row_nr') -> pl.Series:
         ...
 
     @classmethod
@@ -57,7 +58,7 @@ class LeafNode(TreeNode):
     def label(self) -> int:
         return self._label
 
-    def classify(self, samples: pl.DataFrame | pl.LazyFrame) -> pl.Series:
+    def classify(self, samples: pl.DataFrame | pl.LazyFrame, idx_col: str = 'row_nr') -> pl.Series:
         eager = isinstance(samples, pl.DataFrame)
         num_samples = samples.height if eager else samples.with_row_count().select('row_nr').collect().height
 
@@ -98,19 +99,23 @@ class DecisionNode(TreeNode):
     def to_params(self) -> SplitParams:
         return SplitParams(self.attribute, self.threshold)
 
-    def classify(self, samples: pl.DataFrame | pl.LazyFrame) -> pl.Series:
+    def classify(self, samples: pl.DataFrame | pl.LazyFrame, idx_col: str = 'row_nr') -> pl.Series:
         eager = isinstance(samples, pl.DataFrame)
-        idxed_samples = samples.with_row_count()
+
+        if idx_col not in samples.columns:
+            idxed_samples = samples.with_row_count(idx_col)
+        else:
+            idxed_samples = samples
 
         left_samples, right_samples = self.to_params().split(idxed_samples)
 
         if self.left is not None and self.right is not None:
             left_preds: pl.DataFrame | pl.LazyFrame = left_samples.with_columns(
-                self.left.classify(left_samples.drop("row_nr"))
+                self.left.classify(left_samples, idx_col=idx_col)
             )
 
             right_preds: pl.DataFrame | pl.LazyFrame = right_samples.with_columns(
-                self.right.classify(right_samples.drop("row_nr"))
+                self.right.classify(right_samples, idx_col=idx_col)
             )
         else:
             raise Exception("Decision node missing one or more child.")
@@ -126,10 +131,10 @@ class DecisionNode(TreeNode):
 
         if eager:
             assert isinstance(left_preds, pl.DataFrame) and isinstance(right_preds, pl.DataFrame)
-            return pl.concat([left_preds, right_preds]).sort("row_nr")["prediction"].cast(pl.UInt8).alias("prediction")
+            return pl.concat([left_preds, right_preds]).sort(idx_col)["prediction"].cast(pl.UInt8).alias("prediction")
 
         assert isinstance(left_preds, pl.LazyFrame) and isinstance(right_preds, pl.LazyFrame)
-        return pl.concat([left_preds, right_preds]).sort("row_nr").select("prediction").collect().to_series()
+        return left_preds.merge_sorted(right_preds, idx_col).select("prediction").collect().to_series()
     
     def condition_str(self, lt: bool=True) -> str:
         _cmp_str: str = "<=" if lt else ">"
