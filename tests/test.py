@@ -24,10 +24,10 @@ def smalldf() -> pl.DataFrame:
 
 def test_leaf_node_classify(smalldf):
 
-    leaf = LeafNode(1)
+    leaf = LeafNode(1, 'class')
     assert leaf.classify(smalldf).series_equal(pl.Series(name="prediction", values=[1, 1, 1, 1, 1]))
 
-    leaf = LeafNode(0)
+    leaf = LeafNode(0, 'class')
     assert leaf.classify(smalldf).series_equal(pl.Series(name="prediction", values=[0, 0, 0, 0, 0]))
 
 def test_leaf_node_from_majority(smalldf):
@@ -37,10 +37,14 @@ def test_leaf_node_from_majority(smalldf):
 
 def test_decision_node_classify(smalldf):
 
-    dec = DecisionNode('feature_2', 0., 0, 1)
+    dec = DecisionNode('feature_2', 0.)
+    dec.left = LeafNode(0, 'class')
+    dec.right = LeafNode(1, 'class')
     assert dec.classify(smalldf).series_equal(pl.Series(name="prediction", values=[0, 0, 0, 0, 1]))
 
-    dec = DecisionNode('feature_1', 2., 0, 1)
+    dec = DecisionNode('feature_1', 2)
+    dec.left = LeafNode(0, 'class')
+    dec.right = LeafNode(1, 'class')
     assert dec.classify(smalldf).series_equal(pl.Series(name="prediction", values=[0, 0, 1, 1, 1]))
 
 def test_entropy(smalldf: pl.DataFrame):
@@ -79,30 +83,32 @@ def test_split_params(smalldf):
 
 @pytest.fixture
 def heterodf() -> pl.DataFrame:
-    """Classified by feature_1 > 1."""
+    """Classified by x_coord > 1."""
     return pl.DataFrame({
-        'feature_1': [1., 2., 1., 1., 0., 2., 1.],
-        'feature_2': [0., 1., 1., 1., 0., 0., 1.],
-        'class': [0, 1, 0, 0, 0, 1, 0]
+        'x_coord': [1., 2., 1., 1., 0., 2., 1.],
+        'y_coord': [0., 1., 1., 1., 0., 0., 1.],
+        'color': [0, 1, 0, 0, 0, 1, 0]
     })
 
 
 def test_find_best_split(heterodf: pl.DataFrame):
 
-    assert find_best_split(heterodf, 'entropy', 'midpoint') == SplitParams('feature_1', 1.)
-    assert find_best_split(heterodf.lazy(), 'entropy', 'midpoint') == SplitParams('feature_1', 1.)
+    assert find_best_split(heterodf, 'color', 'entropy', 'midpoint') == SplitParams('x_coord', 1.)
+    assert find_best_split(heterodf.lazy(), 'color', 'entropy', 'midpoint') == SplitParams('x_coord', 1.)
 
 def test_decision_tree(heterodf: pl.DataFrame):
 
-    dt = DecisionTree(DecisionTreeParams('midpoint', 'entropy'))
+    dt = DecisionTree(DecisionTreeParams(['x_coord', 'y_coord'], 'color', 'midpoint', 'entropy'))
     dt.fit(heterodf)
     
-    assert isinstance(dt.learned_tree, DecisionNode) and dt.learned_tree.to_params() == SplitParams('feature_1', 1.)
+    assert isinstance(dt.learned_tree, DecisionNode) and dt.learned_tree.to_params() == SplitParams('x_coord', 1.)
     assert isinstance(dt.learned_tree.left, LeafNode) and dt.learned_tree.left.label == 0
     assert isinstance(dt.learned_tree.right, LeafNode) and dt.learned_tree.right.label == 1
     
     assert dt.dict() == {
         'params': {
+            'feature_columns': ['x_coord', 'y_coord'],
+            'class_column': 'color',
             'max_depth': -1, 
             'min_split_entropy': 0.0, 
             'min_split_samples': 0,
@@ -110,19 +116,21 @@ def test_decision_tree(heterodf: pl.DataFrame):
             'splitting_method': 'midpoint',
         },
         'depth': 0,
-        'nodes': {'feature_1 <= 1.0': {'class': 0}, 'feature_1 > 1.0': {'class': 1}},
+        'nodes': {'x_coord <= 1.0': {'color': 0}, 'x_coord > 1.0': {'color': 1}},
     }
     assert json.loads(dt.json(indent=4)) == dt.dict()
     
-    dt = DecisionTree(DecisionTreeParams('midpoint', 'entropy'))
+    dt = DecisionTree(DecisionTreeParams(['x_coord', 'y_coord'], 'color', 'midpoint', 'entropy'))
     dt.fit(heterodf.lazy())
     
-    assert isinstance(dt.learned_tree, DecisionNode) and dt.learned_tree.to_params() == SplitParams('feature_1', 1.)
+    assert isinstance(dt.learned_tree, DecisionNode) and dt.learned_tree.to_params() == SplitParams('x_coord', 1.)
     assert isinstance(dt.learned_tree.left, LeafNode) and dt.learned_tree.left.label == 0
     assert isinstance(dt.learned_tree.right, LeafNode) and dt.learned_tree.right.label == 1
     
     assert dt.dict() == {
         'params': {
+            'feature_columns': ['x_coord', 'y_coord'],
+            'class_column': 'color',
             'max_depth': -1, 
             'min_split_entropy': 0.0, 
             'min_split_samples': 0,
@@ -130,13 +138,13 @@ def test_decision_tree(heterodf: pl.DataFrame):
             'splitting_method': 'midpoint',
         },
         'depth': 0,
-        'nodes': {'feature_1 <= 1.0': {'class': 0}, 'feature_1 > 1.0': {'class': 1}},
+        'nodes': {'x_coord <= 1.0': {'color': 0}, 'x_coord > 1.0': {'color': 1}},
     }
     assert json.loads(dt.json(indent=4)) == dt.dict()
 
 def test_save_and_load_json(heterodf: pl.DataFrame):
 
-    dt = DecisionTree(DecisionTreeParams('midpoint', 'entropy'))
+    dt = DecisionTree(DecisionTreeParams(['x_coord', 'y_coord'], 'color', 'midpoint', 'entropy'))
     dt.fit(heterodf)
 
     tmpf = tempfile.mktemp()

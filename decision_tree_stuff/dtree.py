@@ -37,21 +37,22 @@ class TreeNode(abc.ABC):
 
 
 class LeafNode(TreeNode):
-    def __init__(self, label: int):
+    def __init__(self, label: int, class_name: str='class'):
         self._label: int = label
+        self._class_name: str = class_name
 
     @classmethod
     def from_majority_class(cls, classes: pl.Series) -> "LeafNode":
-        assert classes.name == "class", "Expected `classes` Series name to be 'class', but got %s" % classes.name
-        return cls(get_majority(classes))
+        # assert classes.name == "class", "Expected `classes` Series name to be 'class', but got %s" % classes.name
+        return cls(get_majority(classes), class_name=classes.name)
     
     @classmethod
-    def from_dict(cls, dict_repr: dict) -> "LeafNode":
-        assert "class" in dict_repr.keys()
-        return LeafNode(dict_repr["class"])
+    def from_dict(cls, dict_repr: dict, class_name: str) -> "LeafNode":
+        assert class_name in dict_repr.keys()
+        return LeafNode(dict_repr[class_name], class_name)
     
     def dict(self) -> dict[str, Any]:
-        return {'class': self.label}
+        return {self._class_name: self.label}
 
     @property
     def label(self) -> int:
@@ -59,17 +60,17 @@ class LeafNode(TreeNode):
 
     def classify(self, samples: pl.DataFrame | pl.LazyFrame, idx_col: str = 'row_nr') -> pl.Series:
         eager = isinstance(samples, pl.DataFrame)
-        num_samples = samples.height if eager else samples.select("class").collect().height
+        num_samples = samples.height if eager else samples.with_row_count().select('row_nr').collect().height
 
         return pl.Series("prediction", [], dtype=pl.UInt8).extend_constant(self.label, num_samples)
 
 
 class DecisionNode(TreeNode):
-    def __init__(self, attribute: str, threshold: float, left_label: Optional[int] = None, right_label: Optional[int] = None):
+    def __init__(self, attribute: str, threshold: float):
         self._attribute: str = attribute
         self._threshold: float = threshold
-        self._left: Optional[TreeNode] = LeafNode(left_label) if left_label is not None else None
-        self._right: Optional[TreeNode] = LeafNode(right_label) if right_label is not None else None
+        self._left: Optional[TreeNode] = None
+        self._right: Optional[TreeNode] = None
 
     @property
     def attribute(self) -> str:
@@ -117,15 +118,16 @@ class DecisionNode(TreeNode):
                 self.right.classify(right_samples, idx_col=idx_col)
             )
         else:
-            eager_classes_left, eager_classes_right = \
-                left_samples.select("class").lazy().collect().to_series(), \
-                right_samples.select("class").lazy().collect().to_series()
-            left_preds: pl.DataFrame | pl.LazyFrame = left_samples.with_columns(
-                pl.lit(eager_classes_left.mode()[0]).alias("prediction")
-            )
-            right_preds: pl.DataFrame | pl.LazyFrame = right_samples.with_columns(
-                pl.lit(eager_classes_right.mode()[0]).alias("prediction")
-            )
+            raise Exception("Decision node missing one or more child.")
+            # eager_classes_left, eager_classes_right = \
+            #     left_samples.select(class_column).lazy().collect().to_series(), \
+            #     right_samples.select(class_column).lazy().collect().to_series()
+            # left_preds: pl.DataFrame | pl.LazyFrame = left_samples.with_columns(
+            #     pl.lit(eager_classes_left.mode()[0]).alias("prediction")
+            # )
+            # right_preds: pl.DataFrame | pl.LazyFrame = right_samples.with_columns(
+            #     pl.lit(eager_classes_right.mode()[0]).alias("prediction")
+            # )
 
         if eager:
             assert isinstance(left_preds, pl.DataFrame) and isinstance(right_preds, pl.DataFrame)
@@ -148,17 +150,18 @@ class DecisionNode(TreeNode):
         lt_key: Optional[str] = next(filter(lambda k: "<=" in k, dict_repr.keys()), None)
         gt_key: Optional[str] = next(filter(lambda k: ">" in k, dict_repr.keys()), None)
         assert lt_key is not None
+        assert gt_key is not None
         slf = cls.from_condition_str(lt_key)
 
         if any(['<=' in k for k in dict_repr[lt_key].keys()]):
             slf.left = DecisionNode.from_dict(dict_repr[lt_key])
         else:
-            slf.left = LeafNode.from_dict(dict_repr[lt_key])
+            slf.left = LeafNode.from_dict(dict_repr[lt_key], list(dict_repr[lt_key].keys())[0])
 
         if any(['<=' in k for k in dict_repr[gt_key].keys()]):
             slf.right = DecisionNode.from_dict(dict_repr[gt_key])
         else:
-            slf.right = LeafNode.from_dict(dict_repr[gt_key])
+            slf.right = LeafNode.from_dict(dict_repr[gt_key], list(dict_repr[gt_key].keys())[0])
 
         return slf
     
@@ -170,6 +173,8 @@ class DecisionNode(TreeNode):
 
 
 class DecisionTreeParams(NamedTuple):
+    feature_columns: list[str]
+    class_column: str = 'class'
     splitting_method: Type[SplittingMethod] | str = MeanSplitter
     split_metric: Type[SplitMetric] | str = EntropySplitMetric
     min_split_samples: int = 0
@@ -197,27 +202,28 @@ class DecisionTree:
 
     def fit(self, dataset: pl.DataFrame | pl.LazyFrame, prune: bool = False):
         eager = isinstance(dataset, pl.DataFrame)
-        eager_classes = dataset.select("class") if eager else dataset.select("class").collect()
+        class_name = self._params.class_column
+        eager_classes = dataset.select(class_name) if eager else dataset.select(class_name).collect()
 
         if self._root is None:
             self._root = LeafNode.from_majority_class(eager_classes.to_series())
 
         root_entropy: float = eager_classes.select(
-            EntropySplitMetric.eval_from_p1_expr(pl.col("class").mean()).fill_nan(0.0)
+            EntropySplitMetric.eval_from_p1_expr(pl.col(class_name).mean()).fill_nan(0.0)
         ).to_series()[0]
         self._entropy = root_entropy
 
         if root_entropy == 0.0:
             return
 
-        root_samples: int = dataset.height if eager else dataset.select("class").collect().height
+        root_samples: int = dataset.height if eager else dataset.select(class_name).collect().height
 
         if (
             root_entropy >= self._params.min_split_entropy
             and root_samples >= self._params.min_split_samples
             and self._depth != self._params.max_depth
         ):
-            best_split = find_best_split(dataset, self._params.split_metric, self._params.splitting_method)
+            best_split = find_best_split(dataset, class_name, self._params.split_metric, self._params.splitting_method)
             left, right = best_split.split(dataset)
             if not eager:
                 assert isinstance(left, pl.LazyFrame) and isinstance(right, pl.LazyFrame)
@@ -227,10 +233,10 @@ class DecisionTree:
             if min(left.height, right.height) == 0:
                 return
 
-            left_label = get_majority(left["class"])
-            right_label = get_majority(right["class"])
+            # left_label = get_majority(left[class_name])
+            # right_label = get_majority(right[class_name])
 
-            self._root = DecisionNode(best_split.attribute, best_split.threshold, left_label, right_label)
+            self._root = DecisionNode(best_split.attribute, best_split.threshold)
             self._left_subtree = DecisionTree(self._params, self._root.left, self._depth + 1)
             self._right_subtree = DecisionTree(self._params, self._root.right, self._depth + 1)
 
@@ -270,7 +276,7 @@ class DecisionTree:
         if any(["<=" in k for k in dict_repr["nodes"].keys()]):
             root = DecisionNode.from_dict(dict_repr["nodes"])
         else:
-            root = LeafNode.from_dict(dict_repr["nodes"])
+            root = LeafNode.from_dict(dict_repr["nodes"], list(dict_repr["nodes"].keys())[0])
         return cls(params, root, depth)
     
     def dict(self) -> dict[str, Any]:
